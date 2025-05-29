@@ -6,7 +6,7 @@ namespace GameServer.Technical
     /// <summary>
     /// класс для хэширования пароля
     /// </summary>
-    public class PasswordHasher
+    public static class PasswordHasher
     {
         private const int SaltSize = 16;
 

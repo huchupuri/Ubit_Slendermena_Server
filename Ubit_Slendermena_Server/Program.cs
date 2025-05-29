@@ -35,18 +35,19 @@ class Program
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ Критическая ошибка: {ex.Message}");
+            Console.WriteLine($"Критическая ошибка: {ex.Message}");
         }
     }
 
     static async Task WaitForDatabaseAsync(string connectionString)
     {
-        Console.WriteLine("🔄 Подключение к базе данных...");
+        Console.WriteLine("Подключение к базе данных...");
 
         var optionsBuilder = new DbContextOptionsBuilder<GameDbContext>();
         optionsBuilder.UseNpgsql(connectionString);
 
         await using var context = new GameDbContext(optionsBuilder.Options);
+        context.Database.Migrate();
         DbInitializer.Initialize(context);
         for (int i = 0; i < 10; i++)
         {
@@ -54,7 +55,7 @@ class Program
             {
                 if (await context.Database.CanConnectAsync())
                 {
-                    Console.WriteLine("✅ База данных подключена");
+                    Console.WriteLine("База данных подключена");
                     await context.Database.EnsureCreatedAsync();
                     Console.WriteLine("✅ База данных готова");
                     return;

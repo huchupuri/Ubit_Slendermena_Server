@@ -1,5 +1,7 @@
 ﻿using GameServer.Data;
+using GameServer.Models;
 using Microsoft.EntityFrameworkCore;
+using GameServer.Technical;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -75,7 +77,7 @@ namespace GameServer
                 CleanupConnection();
             }
         }
-        private void AddUserToDatabase(string username)
+        private void AddUserToDatabase(string username, string passsword)
         {
             try
             {
@@ -86,22 +88,23 @@ namespace GameServer
 
                 using var context = new GameDbContext(optionsBuilder.Options);
 
-                var existingUser = context.Users.FirstOrDefault(u => u.Username == username);
+                var existingUser = context.Players.FirstOrDefault(u => u.Username == username);
 
                 if (existingUser == null)
                 {
                     // Создаем нового пользователя
-                    var newUser = new User
+                    var newUser = new Player
                     {
                         Username = username,
+                        Password_hash = passsword,
                         TotalGames = 0,
                         Wins = 0,
                         TotalScore = 0
                     };
 
-                    context.Users.Add(newUser);
+                    context.Players.Add(newUser);
                     context.SaveChanges();
-                    Console.WriteLine($"Пользователь {username} добавлен в базу данных");
+                    Console.WriteLine($"Пользователь {username} добавлен в базу данных asd");
                 }
                 else
                 {
@@ -113,7 +116,20 @@ namespace GameServer
                 Console.WriteLine($"Ошибка при добавлении пользователя в базу данных: {ex.Message}");
             }
         }
+        private (bool isAuthenticated, Player player) AuthenticatePlayer(string username, string password)
+        {
+            var optionsBuilder = new DbContextOptionsBuilder<GameDbContext>();
+            string connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING") ??
+         "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
+            optionsBuilder.UseNpgsql(connectionString);
 
+            var db= new GameDbContext(optionsBuilder.Options);
+            var player = db.Players.FirstOrDefault(p => p.Username == username);
+
+            if (player == null)
+                return (false, null);
+            return (player.Password_hash == PasswordHasher.HashPassword(password), player);
+        }
 
         private void ProcessMessage(string message)
         {
@@ -127,19 +143,68 @@ namespace GameServer
                     switch (type)
                     {
                         case "Login":
-                            if (data.TryGetValue("PlayerName", out var nameElement) &&
-                                nameElement.GetString() is string playerName)
+                            if (data.TryGetValue("Username", out var nameElement) &&
+                                nameElement.GetString() is string Username &&
+                                data.TryGetValue("Password", out var passwordElement) &&
+                                passwordElement.GetString() is string password)
                             {
-                                PlayerName = playerName;
-                                Console.WriteLine($"Игрок {PlayerName} вошел в игру");
+                                var (isAuthenticated, player) = AuthenticatePlayer(Username, password);
 
-                                // Добавляем пользователя в базу данных
-                                AddUserToDatabase(PlayerName, );
+                                PlayerName = Username;
+                                AddUserToDatabase(Username, password);
+                                Console.WriteLine($"Игрок {PlayerName} авторизовался");
+                                if (isAuthenticated)
+                                {
+                                    Console.WriteLine($"Игрок {PlayerName} успешно авторизовался");
 
-                                SendMessage(JsonSerializer.Serialize(new { Type = "LoginSuccess", PlayerId }));
-                                _server.BroadcastMessage(JsonSerializer.Serialize(new { Type = "PlayerJoined", PlayerId, PlayerName }), this);
+                                    SendMessage(JsonSerializer.Serialize(new
+                                    {
+                                        Type = "LoginSuccess",
+                                        Id = player.Id,
+                                        Username,
+                                        TotalGames = player.TotalGames,
+                                        Wins = player.Wins,
+                                        TotalScore = player.TotalScore
+                                    }));
+                                    _server.BroadcastMessage(JsonSerializer.Serialize(new
+                                    {
+                                        Type = "PlayerJoined",
+                                        PlayerId,
+                                        PlayerName
+                                    }), this);
+                                }
+                                else
+                                {
+                                    PlayerName = playerName;
+                                    AddUserToDatabase(playerName, password);
+                                    Console.WriteLine($"Игрок {PlayerName} успешно авторизовался");
+
+                                    SendMessage(JsonSerializer.Serialize(new
+                                    {
+                                        Type = "LoginSuccess",
+                                        PlayerId,
+                                        PlayerName,
+                                        TotalGames = player.TotalGames,
+                                        Wins = player.Wins,
+                                        TotalScore = player.TotalScore
+                                    }));
+
+                                    _server.BroadcastMessage(JsonSerializer.Serialize(new
+                                    {
+                                        Type = "PlayerJoined",
+                                        PlayerId,
+                                        PlayerName
+                                    }), this);
+
+                                    SendMessage(JsonSerializer.Serialize(new
+                                    {
+                                        Type = "LoginFailed",
+                                        Message = "Неверное имя пользователя или пароль"
+                                    }));
+                                }
                             }
                             break;
+
 
                         case "StartGame":
                             Console.WriteLine($"Игрок {PlayerName} запросил начало игры");
@@ -167,13 +232,21 @@ namespace GameServer
 
         public void SendMessage(string message)
         {
-            if (!IsConnected) return;
+            if (!IsConnected)
+            {
+                Console.WriteLine("ун че за хуйня");
+                return;
+            }
 
             try
             {
+                Console.WriteLine("ун че за хуйня0");
                 byte[] buffer = Encoding.UTF8.GetBytes(message);
+                Console.WriteLine("ун че за хуйня1");
                 _stream.Write(buffer, 0, buffer.Length);
+                Console.WriteLine("ун че за хуйня2");
                 _stream.Flush();
+                Console.WriteLine("ун че за хуйня");
             }
             catch (ObjectDisposedException)
             {
@@ -216,7 +289,5 @@ namespace GameServer
                 }
             }
         }
-
-        // Убираем метод Disconnect() - используем только CleanupConnection()
     }
 }

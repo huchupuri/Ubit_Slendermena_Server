@@ -22,7 +22,7 @@ namespace GameServer
         private readonly string _connectionString;
         private Game? _currentGame;
         private readonly object _clientsLock = new();
-
+        
         public GameServer(string connectionString)
         {
             _connectionString = connectionString;

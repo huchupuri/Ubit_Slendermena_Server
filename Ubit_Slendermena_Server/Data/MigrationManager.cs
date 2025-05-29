@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using GameServer.Models;
+using GameServer.Technical;
 
 namespace GameServer.Data   
 {
@@ -86,6 +87,28 @@ namespace GameServer.Data
             };
 
             context.Questions.AddRange(questions);
+            context.SaveChanges();
+            var players = new List<Player>
+            {
+                new Player
+                {
+                    Username = "admin",
+                    Password_hash = PasswordHasher.HashPassword("admin"),
+                    TotalGames = 5,
+                    Wins = 3,
+                    TotalScore = 1500
+                },
+                new Player
+                {
+                    Username = "guest",
+                    Password_hash = PasswordHasher.HashPassword("guest"),
+                    TotalGames = 2,
+                    Wins = 0,
+                    TotalScore = 300
+                }
+            };
+
+            context.Players.AddRange(players);
             context.SaveChanges();
         }
     }
