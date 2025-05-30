@@ -9,6 +9,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using System.Numerics;
 
 namespace GameServer
 {
@@ -96,7 +97,7 @@ namespace GameServer
                     var newUser = new Player
                     {
                         Username = username,
-                        Password_hash = passsword,
+                        Password_hash = PasswordHasher.HashPassword(passsword),
                         TotalGames = 0,
                         Wins = 0,
                         TotalScore = 0
@@ -104,7 +105,7 @@ namespace GameServer
 
                     context.Players.Add(newUser);
                     context.SaveChanges();
-                    Console.WriteLine($"Пользователь {username} добавлен в базу данных asd");
+                    Console.WriteLine($"Пользователь {username} добавлен в базу данных");
                 }
                 else
                 {
@@ -151,11 +152,9 @@ namespace GameServer
                                 var (isAuthenticated, player) = AuthenticatePlayer(Username, password);
 
                                 PlayerName = Username;
-                                AddUserToDatabase(Username, password);
-                                Console.WriteLine($"Игрок {PlayerName} авторизовался");
                                 if (isAuthenticated)
                                 {
-                                    Console.WriteLine($"Игрок {PlayerName} успешно авторизовался");
+                                    Console.WriteLine($"Игрок {PlayerName} успешно авторизовалсяf");
 
                                     SendMessage(JsonSerializer.Serialize(new
                                     {
@@ -169,43 +168,42 @@ namespace GameServer
                                     _server.BroadcastMessage(JsonSerializer.Serialize(new
                                     {
                                         Type = "PlayerJoined",
-                                        PlayerId,
                                         PlayerName
                                     }), this);
                                 }
                                 else
                                 {
-                                    PlayerName = playerName;
-                                    AddUserToDatabase(playerName, password);
-                                    Console.WriteLine($"Игрок {PlayerName} успешно авторизовался");
-
+                                    AddUserToDatabase(Username, password);
+                                    Console.WriteLine($"Игрок {Username} успешно авторизовалсяff");
+                                   
+                                    var (isAuthenticated1, player2) = AuthenticatePlayer(Username, password);
                                     SendMessage(JsonSerializer.Serialize(new
                                     {
                                         Type = "LoginSuccess",
-                                        PlayerId,
-                                        PlayerName,
-                                        TotalGames = player.TotalGames,
-                                        Wins = player.Wins,
-                                        TotalScore = player.TotalScore
+                                        Id = player2.Id,
+                                        Username = player2.Username,
+                                        TotalGames = player2.TotalGames,
+                                        Wins = player2.Wins,
+                                        TotalScore = player2.TotalScore
                                     }));
 
                                     _server.BroadcastMessage(JsonSerializer.Serialize(new
                                     {
                                         Type = "PlayerJoined",
-                                        PlayerId,
-                                        PlayerName
+                                        Username
                                     }), this);
-
-                                    SendMessage(JsonSerializer.Serialize(new
-                                    {
-                                        Type = "LoginFailed",
-                                        Message = "Неверное имя пользователя или пароль"
-                                    }));
                                 }
                             }
                             break;
 
+                        case "SelectQuestion":
+                            Console.WriteLine("отправка вопрсоа");
+                            _server.BroadcastMessage(JsonSerializer.Serialize(new
+                            {
+                                Type = "SelectQuestion"
+                            }));
 
+                            break;
                         case "StartGame":
                             Console.WriteLine($"Игрок {PlayerName} запросил начало игры");
                             _server.StartNewGame();
@@ -234,19 +232,15 @@ namespace GameServer
         {
             if (!IsConnected)
             {
-                Console.WriteLine("ун че за хуйня");
                 return;
             }
 
             try
             {
-                Console.WriteLine("ун че за хуйня0");
+                Console.WriteLine(message);
                 byte[] buffer = Encoding.UTF8.GetBytes(message);
-                Console.WriteLine("ун че за хуйня1");
                 _stream.Write(buffer, 0, buffer.Length);
-                Console.WriteLine("ун че за хуйня2");
                 _stream.Flush();
-                Console.WriteLine("ун че за хуйня");
             }
             catch (ObjectDisposedException)
             {
