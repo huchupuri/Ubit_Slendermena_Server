@@ -78,6 +78,7 @@ namespace GameServer
                 CleanupConnection();
             }
         }
+        
         private void AddUserToDatabase(string username, string passsword)
         {
             try
@@ -132,6 +133,40 @@ namespace GameServer
             return (player.Password_hash == PasswordHasher.HashPassword(password), player);
         }
 
+        public async Task ShowQuestionDetails(int questionId)
+        {
+            // Настройка строки подключения
+            string connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING") ??
+                "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
+
+            var optionsBuilder = new DbContextOptionsBuilder<GameDbContext>();
+            optionsBuilder.UseNpgsql(connectionString);
+
+            await using var context = new GameDbContext(optionsBuilder.Options);
+            Console.WriteLine("asd");
+            // Поиск вопроса по Id
+            var question = await context.Questions
+                .Where(q => q.Id == questionId)
+                .Select(q => new
+                {
+                    q.Price,
+                    q.Text,
+                    q.Answer
+                })
+                .FirstOrDefaultAsync();
+
+            if (question == null)
+            {
+                Console.WriteLine($"Вопрос с Id={questionId} не найден.");
+                return;
+            }
+
+            //Console.WriteLine("===================================");
+            //Console.WriteLine($"Цена: {question.Price}");
+            //Console.WriteLine($"Текст вопроса: {question.Text}");
+            //Console.WriteLine($"Ответ: {question.Answer}");
+            //Console.WriteLine("===================================");
+        }
         private void ProcessMessage(string message)
         {
             try
@@ -169,7 +204,7 @@ namespace GameServer
                                     {
                                         Type = "PlayerJoined",
                                         PlayerName
-                                    }), this);
+                                    }));
                                 }
                                 else
                                 {
@@ -191,17 +226,28 @@ namespace GameServer
                                     {
                                         Type = "PlayerJoined",
                                         Username
-                                    }), this);
+                                    }));
                                 }
                             }
                             break;
 
                         case "SelectQuestion":
-                            Console.WriteLine("отправка вопрсоа");
-                            _server.BroadcastMessage(JsonSerializer.Serialize(new
+                            if (data.TryGetValue("CategoryId", out var questionIdElement) &&
+                                questionIdElement.ValueKind == JsonValueKind.Number &&
+                                questionIdElement.TryGetInt32(out int questionId))
                             {
-                                Type = "SelectQuestion"
-                            }));
+                                ShowQuestionDet(questionId);
+                                _server.BroadcastMessage(JsonSerializer.Serialize(new
+                                {
+                                    Type = "Question",
+                                    Question
+
+                                }));
+                                //SendMessage(JsonSerializer.Serialize(new
+                                //{
+                                //    Type = "SelectQuestion"
+                                //}));
+                            }
 
                             break;
                         case "StartGame":
@@ -209,16 +255,16 @@ namespace GameServer
                             _server.StartNewGame();
                             break;
 
-                        case "Answer":
-                            if (data.TryGetValue("QuestionId", out var questionIdElement) &&
-                                data.TryGetValue("Answer", out var answerElement) &&
-                                answerElement.GetString() is string answer)
-                            {
-                                int questionId = questionIdElement.GetInt32();
-                                Console.WriteLine($"Игрок {PlayerName} ответил: {answer}");
-                                _server.ProcessAnswer(this, questionId, answer);
-                            }
-                            break;
+                        //case "Answer":
+                        //    if (data.TryGetValue("QuestionId", out var questionIdElement) &&
+                        //        data.TryGetValue("Answer", out var answerElement) &&
+                        //        answerElement.GetString() is string answer)
+                        //    {
+                        //        int questionId = questionIdElement.GetInt32();
+                        //        Console.WriteLine($"Игрок {PlayerName} ответил: {answer}");
+                        //        _server.ProcessAnswer(this, questionId, answer);
+                        //    }
+                        //    break;
                     }
                 }
             }
@@ -230,14 +276,11 @@ namespace GameServer
 
         public void SendMessage(string message)
         {
-            if (!IsConnected)
-            {
-                return;
-            }
-
+            //Task.Delay(3000);
             try
             {
                 Console.WriteLine(message);
+                message += "\n";
                 byte[] buffer = Encoding.UTF8.GetBytes(message);
                 _stream.Write(buffer, 0, buffer.Length);
                 _stream.Flush();

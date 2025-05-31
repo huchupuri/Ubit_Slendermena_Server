@@ -61,11 +61,14 @@ namespace GameServer
                     Console.WriteLine($"Новое подключение от {client.Client.RemoteEndPoint}");
 
                     ClientHandler clientHandler = new(client, this);
+                    
 
                     lock (_clientsLock)
                     {
                         _clients.Add(clientHandler);
                     }
+                    foreach (var clientAcc in _clients)
+                        Console.WriteLine(client);
 
                     Thread clientThread = new(clientHandler.Handle) { IsBackground = true };
                     clientThread.Start();
@@ -86,17 +89,12 @@ namespace GameServer
             Console.WriteLine("Поток приема подключений завершен");
         }
 
-        public void BroadcastMessage(string message, ClientHandler? excludeClient = null)
+        public void BroadcastMessage(string message)
         {
-            List<ClientHandler> clientsCopy;
-            lock (_clientsLock)
-            {
-                clientsCopy = new List<ClientHandler>(_clients);
-            }
-
-            foreach (var client in clientsCopy.Where(c => c != excludeClient && c.IsConnected))
+            foreach (var client in _clients)
             {
                 client.SendMessage(message);
+                
             }
         }
 
