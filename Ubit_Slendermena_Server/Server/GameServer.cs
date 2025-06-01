@@ -129,6 +129,7 @@ namespace GameServer
                     foreach (var question in category.Questions)
                     {
                         _questions[question.Id] = question;
+                        Console.WriteLine();
                     }
                 }
 
@@ -141,7 +142,7 @@ namespace GameServer
             }
         }
 
-        public void StartNewGame()
+        public void StartNewGame(byte playerCount)
         {
             List<ClientHandler> clientsCopy;
             lock (_clientsLock)
@@ -149,13 +150,13 @@ namespace GameServer
                 clientsCopy = new List<ClientHandler>(_clients.Where(c => c.IsConnected));
             }
 
-            if (clientsCopy.Count < 1)
+            if (clientsCopy.Count < playerCount)
             {
                 BroadcastMessage(JsonSerializer.Serialize(new { Type = "Error", Message = "Недостаточно игроков для начала игры" }));
                 return;
             }
 
-            _currentGame = new Game(clientsCopy, _categories, _questions);
+            _currentGame = new Game(clientsCopy, _categories, _questions, playerCount);
             _currentGame.Start();
 
             BroadcastMessage(JsonSerializer.Serialize(new
@@ -187,7 +188,6 @@ namespace GameServer
                 NewScore = client.Score
             }));
 
-            // Переходим к следующему вопросу через 3 секунды
             Task.Delay(3000).ContinueWith(_ => _currentGame.NextQuestion());
         }
 

@@ -10,18 +10,20 @@ namespace GameServer
 {
     public class Game
     {
+        private readonly byte _maxPlayers;
         private readonly List<ClientHandler> _players;
         private readonly Dictionary<int, Category> _categories;
         private readonly Dictionary<int, Question> _questions;
         private readonly List<int> _availableQuestions;
         public Question? CurrentQuestion { get; private set; }
 
-        public Game(List<ClientHandler> players, Dictionary<int, Category> categories, Dictionary<int, Question> questions)
+        public Game(List<ClientHandler> players, Dictionary<int, Category> categories, Dictionary<int, Question> questions, byte maxPlayers)
         {
             _players = players;
             _categories = categories;
             _questions = questions;
             _availableQuestions = [.. questions.Keys];
+            _maxPlayers = maxPlayers;
         }
 
         public void Start()

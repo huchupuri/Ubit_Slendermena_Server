@@ -2,72 +2,73 @@
 using GameServer.Data;
 
 namespace GameServerApp;
-
-class Program
 {
-    static async Task Main(string[] args)
+    class Program
     {
-        Console.WriteLine("🎮 Запуск сервера 'Своя игра'...");
-
-        string connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING") ??
-            "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
-
-        if (!int.TryParse(Environment.GetEnvironmentVariable("SERVER_PORT"), out int port))
+        static async Task Main(string[] args)
         {
-            port = 5000;
-        }
+            Console.WriteLine("🎮 Запуск сервера 'Своя игра'...");
 
-        GameServer.GameServer? server = null;
+            string connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING") ??
+                "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
 
-        try
-        {
-            await WaitForDatabaseAsync(connectionString);
-
-            server = new GameServer.GameServer(connectionString);
-            server.Start(port);
-
-            Console.WriteLine("Сервер запущен успешно!");
-            Console.WriteLine("Логи сервера:");
-            while (true)
+            if (!int.TryParse(Environment.GetEnvironmentVariable("SERVER_PORT"), out int port))
             {
-                await Task.Delay(1000);
+                port = 5000;
             }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Критическая ошибка: {ex.Message}");
-        }
-    }
 
-    static async Task WaitForDatabaseAsync(string connectionString)
-    {
-        Console.WriteLine("Подключение к базе данных...");
+            GameServer.GameServer? server = null;
 
-        var optionsBuilder = new DbContextOptionsBuilder<GameDbContext>();
-        optionsBuilder.UseNpgsql(connectionString);
-
-        await using var context = new GameDbContext(optionsBuilder.Options);
-        context.Database.Migrate();
-        DbInitializer.Initialize(context);
-        for (int i = 0; i < 10; i++)
-        {
             try
             {
-                if (await context.Database.CanConnectAsync())
+                await WaitForDatabaseAsync(connectionString);
+
+                server = new GameServer.GameServer(connectionString);
+                server.Start(port);
+
+                Console.WriteLine("Сервер запущен успешно!");
+                Console.WriteLine("Логи сервера:");
+                while (true)
                 {
-                    Console.WriteLine("База данных подключена");
-                    await context.Database.EnsureCreatedAsync();
-                    Console.WriteLine("✅ База данных готова");
-                    return;
+                    await Task.Delay(1000);
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                Console.WriteLine($"⏳ Попытка {i + 1}/10...");
-                await Task.Delay(2000);
+                Console.WriteLine($"Критическая ошибка: {ex.Message}");
             }
         }
 
-        throw new Exception("Не удалось подключиться к базе данных");
+        static async Task WaitForDatabaseAsync(string connectionString)
+        {
+            Console.WriteLine("Подключение к базе данных...");
+
+            var optionsBuilder = new DbContextOptionsBuilder<GameDbContext>();
+            optionsBuilder.UseNpgsql(connectionString);
+
+            await using var context = new GameDbContext(optionsBuilder.Options);
+            context.Database.Migrate();
+            DbInitializer.Initialize(context);
+            for (int i = 0; i < 10; i++)
+            {
+                try
+                {
+                    if (await context.Database.CanConnectAsync())
+                    {
+                        Console.WriteLine("База данных подключена");
+                        await context.Database.EnsureCreatedAsync();
+                        Console.WriteLine("✅ База данных готова");
+                        return;
+                    }
+                }
+                catch
+                {
+                    Console.WriteLine($"⏳ Попытка {i + 1}/10...");
+                    await Task.Delay(2000);
+                }
+            }
+
+            throw new Exception("Не удалось подключиться к базе данных");
+        }
     }
 }

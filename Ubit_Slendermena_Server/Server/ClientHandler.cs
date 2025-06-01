@@ -133,39 +133,25 @@ namespace GameServer
             return (player.Password_hash == PasswordHasher.HashPassword(password), player);
         }
 
-        public async Task ShowQuestionDetails(int questionId)
+        public Question ShowQuestionDetails(int questionId)
         {
-            // Настройка строки подключения
             string connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING") ??
                 "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
 
             var optionsBuilder = new DbContextOptionsBuilder<GameDbContext>();
             optionsBuilder.UseNpgsql(connectionString);
 
-            await using var context = new GameDbContext(optionsBuilder.Options);
-            Console.WriteLine("asd");
-            // Поиск вопроса по Id
-            var question = await context.Questions
-                .Where(q => q.Id == questionId)
-                .Select(q => new
-                {
-                    q.Price,
-                    q.Text,
-                    q.Answer
-                })
-                .FirstOrDefaultAsync();
+            using var context = new GameDbContext(optionsBuilder.Options);
+
+            var question = context.Questions.FirstOrDefault(q => q.Id == questionId);
 
             if (question == null)
             {
                 Console.WriteLine($"Вопрос с Id={questionId} не найден.");
-                return;
+                return null;
             }
 
-            //Console.WriteLine("===================================");
-            //Console.WriteLine($"Цена: {question.Price}");
-            //Console.WriteLine($"Текст вопроса: {question.Text}");
-            //Console.WriteLine($"Ответ: {question.Answer}");
-            //Console.WriteLine("===================================");
+            return question;
         }
         private void ProcessMessage(string message)
         {
@@ -236,12 +222,11 @@ namespace GameServer
                                 questionIdElement.ValueKind == JsonValueKind.Number &&
                                 questionIdElement.TryGetInt32(out int questionId))
                             {
-                                ShowQuestionDet(questionId);
+                                var selecteQuestion = ShowQuestionDetails(questionId);
                                 _server.BroadcastMessage(JsonSerializer.Serialize(new
                                 {
                                     Type = "Question",
-                                    Question
-
+                                    Message = selecteQuestion.Text
                                 }));
                                 //SendMessage(JsonSerializer.Serialize(new
                                 //{
@@ -251,8 +236,18 @@ namespace GameServer
 
                             break;
                         case "StartGame":
-                            Console.WriteLine($"Игрок {PlayerName} запросил начало игры");
-                            _server.StartNewGame();
+                            if (data.TryGetValue("playerCount", out var playerCount) &&
+                                playerCount.ValueKind == JsonValueKind.Number &&
+                                playerCount.TryGetByte(out byte PlayerCount))
+                            {
+                                Console.WriteLine($"Игрок {PlayerName} запросил начало игры");
+                                _server.StartNewGame(PlayerCount);
+                            }
+                            else
+                            {
+                                Console.WriteLine("ошибка при старте игры");
+                            }
+                            
                             break;
 
                         //case "Answer":
