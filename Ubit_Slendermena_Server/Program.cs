@@ -1,7 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using GameServer.Data;
 
-namespace GameServerApp;
+namespace GameServerApp
 {
     class Program
     {

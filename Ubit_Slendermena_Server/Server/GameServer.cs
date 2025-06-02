@@ -161,9 +161,9 @@ namespace GameServer
 
             BroadcastMessage(JsonSerializer.Serialize(new
             {
-                Type = "GameStarted",
-                Categories = _categories.Values,
-                Players = clientsCopy.Select(c => new { c.PlayerId, c.PlayerName, c.Score }).ToList()
+                Type = "Start",
+                //Categories = _categories.Values,
+                //Players = clientsCopy.Select(c => new { c.PlayerId, c.PlayerName, c.Score }).ToList()
             }));
         }
 

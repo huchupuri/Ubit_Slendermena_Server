@@ -236,19 +236,26 @@ namespace GameServer
 
                             break;
                         case "StartGame":
-                            if (data.TryGetValue("playerCount", out var playerCount) &&
-                                playerCount.ValueKind == JsonValueKind.Number &&
-                                playerCount.TryGetByte(out byte PlayerCount))
-                            {
-                                Console.WriteLine($"Игрок {PlayerName} запросил начало игры");
-                                _server.StartNewGame(PlayerCount);
+                                if (data.TryGetValue("playerCount", out var playerCount) &&
+                                    playerCount.ValueKind == JsonValueKind.Number &&
+                                    playerCount.TryGetByte(out byte PlayerCount))
+                                {
+                                    Console.WriteLine($"Игрок {PlayerName} запросил начало игры");
+                                    _server.StartNewGame(PlayerCount);
+                                    SendMessage(JsonSerializer.Serialize(new
+                                    {
+                                        Type = "GameStarted"
+                                    }));
+
                             }
-                            else
-                            {
+                                else
+                                {
+                                
                                 Console.WriteLine("ошибка при старте игры");
-                            }
+                                }
                             
                             break;
+
 
                         //case "Answer":
                         //    if (data.TryGetValue("QuestionId", out var questionIdElement) &&
