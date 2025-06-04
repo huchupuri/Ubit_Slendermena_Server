@@ -17,8 +17,7 @@ namespace GameServer
     {
         private HttpListener _listener;
         private bool _isRunning;
-
-        readonly List<WebSocketClientHandler> _clients = new();
+        private readonly List<WebSocketClientHandler> _clients = new();
         private readonly Dictionary<int, Category> _categories = new();
         private readonly Dictionary<int, Question> _questions = new();
         private readonly string _connectionString;
@@ -30,7 +29,7 @@ namespace GameServer
             _connectionString = connectionString;
             LoadGameData();
         }
-       
+
         public void Start(int port)
         {
             try
@@ -76,7 +75,6 @@ namespace GameServer
                     Console.WriteLine($"Ошибка при подключении клиента: {ex.Message}");
                 }
             }
-            Console.WriteLine("Поток приема подключений завершен");
         }
 
         private async void ProcessWebSocketRequest(HttpListenerContext context)
@@ -147,7 +145,6 @@ namespace GameServer
                 optionsBuilder.UseNpgsql(_connectionString);
 
                 using var context = new GameDbContext(optionsBuilder.Options);
-
                 context.Database.EnsureCreated();
 
                 var categories = context.Categories.Include(c => c.Questions).ToList();
@@ -155,7 +152,6 @@ namespace GameServer
                 foreach (var category in categories)
                 {
                     _categories[category.Id] = category;
-
                     foreach (var question in category.Questions)
                     {
                         _questions[question.Id] = question;
@@ -184,16 +180,34 @@ namespace GameServer
                 await BroadcastMessageAsync(JsonSerializer.Serialize(new { Type = "Error", Message = "Недостаточно игроков для начала игры" }));
                 return;
             }
-            if (_currentGame == null)
-            {
-                _currentGame = new Game(clientsCopy, _categories, _questions, playerCount);
-            }
-            
+
+            _currentGame = new Game(clientsCopy, _categories, _questions, playerCount, this);
+            _currentGame.Start();
 
             await BroadcastMessageAsync(JsonSerializer.Serialize(new
             {
-                Type = "Start"
+                Type = "GameStarted",
+                Players = clientsCopy.Select(c => new { c.PlayerId, c.PlayerName, c.Score }).ToList()
             }));
+        }
+
+        public async Task ProcessQuestionSelectionAsync(WebSocketClientHandler client, int categoryId)
+        {
+            if (_currentGame == null)
+            {
+                await client.SendMessageAsync(JsonSerializer.Serialize(new { Type = "Error", Message = "Игра не начата" }));
+                return;
+            }
+
+            var question = _questions.Values.FirstOrDefault(q => q.CategoryId == categoryId && !_currentGame.IsQuestionAnswered(q.Id));
+            
+            if (question == null)
+            {
+                await client.SendMessageAsync(JsonSerializer.Serialize(new { Type = "Error", Message = "Вопрос не найден или уже отвечен" }));
+                return;
+            }
+
+            await _currentGame.ShowQuestionAsync(question);
         }
 
         public async Task ProcessAnswerAsync(WebSocketClientHandler client, int questionId, string answer)
@@ -204,21 +218,7 @@ namespace GameServer
                 return;
             }
 
-            bool isCorrect = _currentGame.CheckAnswer(client, answer);
-
-            await BroadcastMessageAsync(JsonSerializer.Serialize(new
-            {
-                Type = "AnswerResult",
-                PlayerId = client.PlayerId,
-                PlayerName = client.PlayerName,
-                QuestionId = questionId,
-                IsCorrect = isCorrect,
-                CorrectAnswer = isCorrect ? null : _currentGame.CurrentQuestion.Answer,
-                NewScore = client.Score
-            }));
-
-            await Task.Delay(3000);
-            _currentGame.NextQuestion();
+            await _currentGame.ProcessAnswerAsync(client, answer);
         }
 
         public void Stop()

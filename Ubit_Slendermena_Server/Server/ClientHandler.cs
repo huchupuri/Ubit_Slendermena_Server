@@ -8,7 +8,6 @@ using GameServer.Data;
 using GameServer.Models;
 using GameServer.Technical;
 using Microsoft.EntityFrameworkCore;
-using Ubit_Slendermena_Server.Models;
 
 namespace GameServer
 {
@@ -30,17 +29,6 @@ namespace GameServer
             _isConnected = true;
             PlayerId = Guid.NewGuid().ToString();
             Score = 0;
-        }
-        public ClientPlayer ToClientPlayer(this WebSocketClientHandler handler)
-        {
-            return new ClientPlayer
-            {
-                Id = Guid.Parse(handler.PlayerId),
-                Username = handler.PlayerName,
-                TotalGames = 0, // Если у вас есть доступ к количеству игр
-                Wins = 0,       // Если у вас есть доступ к победам
-                TotalScore = handler.Score // Баллы игрока
-            };
         }
 
         public async Task HandleAsync()
@@ -97,7 +85,6 @@ namespace GameServer
 
                 if (existingUser == null)
                 {
-                    // Создаем нового пользователя
                     var newUser = new Player
                     {
                         Username = username,
@@ -110,10 +97,6 @@ namespace GameServer
                     context.Players.Add(newUser);
                     context.SaveChanges();
                     Console.WriteLine($"Пользователь {username} добавлен в базу данных");
-                }
-                else
-                {
-                    Console.WriteLine($"Пользователь {username} уже существует в базе данных");
                 }
             }
             catch (Exception ex)
@@ -135,27 +118,6 @@ namespace GameServer
             if (player == null)
                 return (false, null);
             return (player.Password_hash == PasswordHasher.HashPassword(password), player);
-        }
-
-        public Question ShowQuestionDetails(int questionId)
-        {
-            string connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING") ??
-                "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
-
-            var optionsBuilder = new DbContextOptionsBuilder<GameDbContext>();
-            optionsBuilder.UseNpgsql(connectionString);
-
-            using var context = new GameDbContext(optionsBuilder.Options);
-
-            var question = context.Questions.FirstOrDefault(q => q.Id == questionId);
-
-            if (question == null)
-            {
-                Console.WriteLine($"Вопрос с Id={questionId} не найден.");
-                return null;
-            }
-
-            return question;
         }
 
         private async Task ProcessMessageAsync(string message)
@@ -195,7 +157,7 @@ namespace GameServer
                                     await _server.BroadcastMessageAsync(JsonSerializer.Serialize(new
                                     {
                                         Type = "PlayerJoined",
-                                        PlayerName
+                                        PlayerName = Username
                                     }));
                                 }
                                 else
@@ -217,23 +179,19 @@ namespace GameServer
                                     await _server.BroadcastMessageAsync(JsonSerializer.Serialize(new
                                     {
                                         Type = "PlayerJoined",
-                                        Username
+                                        PlayerName = Username
                                     }));
                                 }
                             }
                             break;
 
                         case "SelectQuestion":
-                            if (data.TryGetValue("CategoryId", out var questionIdElement) &&
-                                questionIdElement.ValueKind == JsonValueKind.Number &&
-                                questionIdElement.TryGetInt32(out int questionId))
+                            if (data.TryGetValue("CategoryId", out var categoryIdElement) &&
+                                categoryIdElement.ValueKind == JsonValueKind.Number &&
+                                categoryIdElement.TryGetInt32(out int categoryId))
                             {
-                                var selectedQuestion = ShowQuestionDetails(questionId);
-                                await _server.BroadcastMessageAsync(JsonSerializer.Serialize(new
-                                {
-                                    Type = "Question",
-                                    Message = selectedQuestion.Text
-                                }));
+                                Console.WriteLine($"Игрок {PlayerName} выбрал вопрос из категории {categoryId}");
+                                await _server.ProcessQuestionSelectionAsync(this, categoryId);
                             }
                             break;
 
@@ -242,18 +200,8 @@ namespace GameServer
                                 playerCount.ValueKind == JsonValueKind.Number &&
                                 playerCount.TryGetByte(out byte PlayerCount))
                             {
-                                
-                                await _server.StartNewGameAsync(PlayerCount);
-                                await SendMessageAsync(JsonSerializer.Serialize(new
-                                {
-                                    Type = "GameStarted",
-                                    Players = _server._currentGame.GetPlayers()
-                                }));
                                 Console.WriteLine($"Игрок {PlayerName} запросил начало игры");
-                            }
-                            else
-                            {
-                                Console.WriteLine("Ошибка при старте игры");
+                                await _server.StartNewGameAsync(PlayerCount);
                             }
                             break;
 
@@ -273,7 +221,7 @@ namespace GameServer
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"{message}");
+                Console.WriteLine($"Ошибка обработки сообщения от {PlayerName}: {ex.Message}");
             }
         }
 
@@ -292,7 +240,6 @@ namespace GameServer
             }
             catch (WebSocketException)
             {
-                // Клиент отключился
                 _isConnected = false;
             }
             catch (Exception ex)
