@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Ubit_Slendermena_Server.Models;
 
 namespace GameServer
 {
@@ -25,10 +26,10 @@ namespace GameServer
             _availableQuestions = new List<int>(questions.Keys);
             _maxPlayers = maxPlayers;
         }
-        public List<WebSocketClientHandler> GetPlayers()
-        {
-            return _players;
-        }
+        //public List<ClientPlayer> GetPlayers()
+        //{
+        //    return _players.Select(handler => handler.ToClientPlayer()).ToList();
+        //}
         public void Start()
         {
             Console.WriteLine("Начало новой игры");

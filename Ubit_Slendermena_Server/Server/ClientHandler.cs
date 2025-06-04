@@ -8,6 +8,7 @@ using GameServer.Data;
 using GameServer.Models;
 using GameServer.Technical;
 using Microsoft.EntityFrameworkCore;
+using Ubit_Slendermena_Server.Models;
 
 namespace GameServer
 {
@@ -29,6 +30,17 @@ namespace GameServer
             _isConnected = true;
             PlayerId = Guid.NewGuid().ToString();
             Score = 0;
+        }
+        public ClientPlayer ToClientPlayer(this WebSocketClientHandler handler)
+        {
+            return new ClientPlayer
+            {
+                Id = Guid.Parse(handler.PlayerId),
+                Username = handler.PlayerName,
+                TotalGames = 0, // Если у вас есть доступ к количеству игр
+                Wins = 0,       // Если у вас есть доступ к победам
+                TotalScore = handler.Score // Баллы игрока
+            };
         }
 
         public async Task HandleAsync()
