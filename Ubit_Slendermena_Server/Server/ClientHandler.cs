@@ -1,73 +1,64 @@
-﻿using GameServer.Data;
-using GameServer.Models;
-using Microsoft.EntityFrameworkCore;
-using GameServer.Technical;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net.Sockets;
+﻿using System;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
-using System.Numerics;
+using GameServer.Data;
+using GameServer.Models;
+using GameServer.Technical;
+using Microsoft.EntityFrameworkCore;
 
 namespace GameServer
 {
-    public class ClientHandler
+    public class WebSocketClientHandler
     {
-        private readonly TcpClient _client;
-        private readonly NetworkStream _stream;
-        private readonly GameServer _server;
+        private readonly WebSocket _webSocket;
+        private readonly GameServerWebSocket _server;
         private volatile bool _isConnected;
 
         public string PlayerId { get; private set; }
         public string PlayerName { get; private set; } = string.Empty;
         public int Score { get; set; }
-        public bool IsConnected => _isConnected && _client.Connected;
+        public bool IsConnected => _isConnected && _webSocket.State == WebSocketState.Open;
 
-        public ClientHandler(TcpClient client, GameServer server)
+        public WebSocketClientHandler(WebSocket webSocket, GameServerWebSocket server)
         {
-            _client = client;
+            _webSocket = webSocket;
             _server = server;
-            _stream = client.GetStream();
             _isConnected = true;
             PlayerId = Guid.NewGuid().ToString();
             Score = 0;
         }
 
-        public void Handle()
+        public async Task HandleAsync()
         {
-            byte[] buffer = new byte[4096];
+            var buffer = new byte[4096];
+            var receiveBuffer = new ArraySegment<byte>(buffer);
 
             try
             {
                 Console.WriteLine($"Начало обработки клиента {PlayerId}");
 
-                while (_isConnected && _client.Connected)
+                while (_isConnected && _webSocket.State == WebSocketState.Open)
                 {
-                    int bytesRead = _stream.Read(buffer, 0, buffer.Length);
-                    if (bytesRead == 0)
+                    WebSocketReceiveResult result = await _webSocket.ReceiveAsync(receiveBuffer, CancellationToken.None);
+
+                    if (result.MessageType == WebSocketMessageType.Close)
                     {
                         Console.WriteLine($"Клиент {PlayerName} отключился");
+                        await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Клиент отключился", CancellationToken.None);
                         break;
                     }
 
-                    string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                    string message = Encoding.UTF8.GetString(buffer, 0, result.Count);
                     Console.WriteLine($"Получено от {PlayerName}: {message}");
-                    ProcessMessage(message);
+                    await ProcessMessageAsync(message);
                 }
             }
-            catch (IOException)
+            catch (WebSocketException)
             {
-                Console.WriteLine($"Клиент {PlayerName} отключился (IOException)");
-            }
-            catch (SocketException)
-            {
-                Console.WriteLine($"Клиент {PlayerName} отключился (SocketException)");
-            }
-            catch (ObjectDisposedException)
-            {
-                Console.WriteLine($"Соединение с {PlayerName} уже закрыто");
+                Console.WriteLine($"Клиент {PlayerName} отключился (WebSocketException)");
             }
             catch (Exception ex)
             {
@@ -75,17 +66,17 @@ namespace GameServer
             }
             finally
             {
-                CleanupConnection();
+                await CleanupConnectionAsync();
             }
         }
-        
-        private void AddUserToDatabase(string username, string passsword)
+
+        private void AddUserToDatabase(string username, string password)
         {
             try
             {
                 var optionsBuilder = new DbContextOptionsBuilder<GameDbContext>();
                 string connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING") ??
-            "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
+                    "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
                 optionsBuilder.UseNpgsql(connectionString);
 
                 using var context = new GameDbContext(optionsBuilder.Options);
@@ -98,7 +89,7 @@ namespace GameServer
                     var newUser = new Player
                     {
                         Username = username,
-                        Password_hash = PasswordHasher.HashPassword(passsword),
+                        Password_hash = PasswordHasher.HashPassword(password),
                         TotalGames = 0,
                         Wins = 0,
                         TotalScore = 0
@@ -118,14 +109,15 @@ namespace GameServer
                 Console.WriteLine($"Ошибка при добавлении пользователя в базу данных: {ex.Message}");
             }
         }
+
         private (bool isAuthenticated, Player player) AuthenticatePlayer(string username, string password)
         {
             var optionsBuilder = new DbContextOptionsBuilder<GameDbContext>();
             string connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING") ??
-         "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
+                "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
             optionsBuilder.UseNpgsql(connectionString);
 
-            var db= new GameDbContext(optionsBuilder.Options);
+            using var db = new GameDbContext(optionsBuilder.Options);
             var player = db.Players.FirstOrDefault(p => p.Username == username);
 
             if (player == null)
@@ -153,7 +145,8 @@ namespace GameServer
 
             return question;
         }
-        private void ProcessMessage(string message)
+
+        private async Task ProcessMessageAsync(string message)
         {
             try
             {
@@ -175,9 +168,9 @@ namespace GameServer
                                 PlayerName = Username;
                                 if (isAuthenticated)
                                 {
-                                    Console.WriteLine($"Игрок {PlayerName} успешно авторизовалсяf");
+                                    Console.WriteLine($"Игрок {PlayerName} успешно авторизовался");
 
-                                    SendMessage(JsonSerializer.Serialize(new
+                                    await SendMessageAsync(JsonSerializer.Serialize(new
                                     {
                                         Type = "LoginSuccess",
                                         Id = player.Id,
@@ -186,7 +179,8 @@ namespace GameServer
                                         Wins = player.Wins,
                                         TotalScore = player.TotalScore
                                     }));
-                                    _server.BroadcastMessage(JsonSerializer.Serialize(new
+
+                                    await _server.BroadcastMessageAsync(JsonSerializer.Serialize(new
                                     {
                                         Type = "PlayerJoined",
                                         PlayerName
@@ -195,10 +189,10 @@ namespace GameServer
                                 else
                                 {
                                     AddUserToDatabase(Username, password);
-                                    Console.WriteLine($"Игрок {Username} успешно авторизовалсяff");
-                                   
+                                    Console.WriteLine($"Игрок {Username} успешно зарегистрирован");
+
                                     var (isAuthenticated1, player2) = AuthenticatePlayer(Username, password);
-                                    SendMessage(JsonSerializer.Serialize(new
+                                    await SendMessageAsync(JsonSerializer.Serialize(new
                                     {
                                         Type = "LoginSuccess",
                                         Id = player2.Id,
@@ -208,7 +202,7 @@ namespace GameServer
                                         TotalScore = player2.TotalScore
                                     }));
 
-                                    _server.BroadcastMessage(JsonSerializer.Serialize(new
+                                    await _server.BroadcastMessageAsync(JsonSerializer.Serialize(new
                                     {
                                         Type = "PlayerJoined",
                                         Username
@@ -222,77 +216,69 @@ namespace GameServer
                                 questionIdElement.ValueKind == JsonValueKind.Number &&
                                 questionIdElement.TryGetInt32(out int questionId))
                             {
-                                var selecteQuestion = ShowQuestionDetails(questionId);
-                                _server.BroadcastMessage(JsonSerializer.Serialize(new
+                                var selectedQuestion = ShowQuestionDetails(questionId);
+                                await _server.BroadcastMessageAsync(JsonSerializer.Serialize(new
                                 {
                                     Type = "Question",
-                                    Message = selecteQuestion.Text
+                                    Message = selectedQuestion.Text
                                 }));
-                                //SendMessage(JsonSerializer.Serialize(new
-                                //{
-                                //    Type = "SelectQuestion"
-                                //}));
                             }
-
                             break;
+
                         case "StartGame":
-                                if (data.TryGetValue("playerCount", out var playerCount) &&
-                                    playerCount.ValueKind == JsonValueKind.Number &&
-                                    playerCount.TryGetByte(out byte PlayerCount))
-                                {
-                                    Console.WriteLine($"Игрок {PlayerName} запросил начало игры");
-                                    _server.StartNewGame(PlayerCount);
-                                    SendMessage(JsonSerializer.Serialize(new
-                                    {
-                                        Type = "GameStarted"
-                                    }));
-
-                            }
-                                else
-                                {
+                            if (data.TryGetValue("playerCount", out var playerCount) &&
+                                playerCount.ValueKind == JsonValueKind.Number &&
+                                playerCount.TryGetByte(out byte PlayerCount))
+                            {
                                 
-                                Console.WriteLine("ошибка при старте игры");
-                                }
-                            
+                                await _server.StartNewGameAsync(PlayerCount);
+                                await SendMessageAsync(JsonSerializer.Serialize(new
+                                {
+                                    Type = "GameStarted",
+                                    Players = _server._currentGame.GetPlayers()
+                                }));
+                                Console.WriteLine($"Игрок {PlayerName} запросил начало игры");
+                            }
+                            else
+                            {
+                                Console.WriteLine("Ошибка при старте игры");
+                            }
                             break;
 
-
-                        //case "Answer":
-                        //    if (data.TryGetValue("QuestionId", out var questionIdElement) &&
-                        //        data.TryGetValue("Answer", out var answerElement) &&
-                        //        answerElement.GetString() is string answer)
-                        //    {
-                        //        int questionId = questionIdElement.GetInt32();
-                        //        Console.WriteLine($"Игрок {PlayerName} ответил: {answer}");
-                        //        _server.ProcessAnswer(this, questionId, answer);
-                        //    }
-                        //    break;
+                        case "Answer":
+                            if (data.TryGetValue("QuestionId", out var answerQuestionIdElement) &&
+                                answerQuestionIdElement.ValueKind == JsonValueKind.Number &&
+                                answerQuestionIdElement.TryGetInt32(out int answerQuestionId) &&
+                                data.TryGetValue("Answer", out var answerElement) &&
+                                answerElement.GetString() is string answer)
+                            {
+                                Console.WriteLine($"Игрок {PlayerName} ответил: {answer}");
+                                await _server.ProcessAnswerAsync(this, answerQuestionId, answer);
+                            }
+                            break;
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Ошибка обработки сообщения от {PlayerName}: {ex.Message}");
+                Console.WriteLine($"{message}");
             }
         }
 
-        public void SendMessage(string message)
+        public async Task SendMessageAsync(string message)
         {
-            //Task.Delay(3000);
             try
             {
-                Console.WriteLine(message);
-                message += "\n";
+                if (_webSocket.State != WebSocketState.Open)
+                {
+                    _isConnected = false;
+                    return;
+                }
+
                 byte[] buffer = Encoding.UTF8.GetBytes(message);
-                _stream.Write(buffer, 0, buffer.Length);
-                _stream.Flush();
+                await _webSocket.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
             }
-            catch (ObjectDisposedException)
-            {
-                // Соединение уже закрыто - это нормально
-                _isConnected = false;
-            }
-            catch (IOException)
+            catch (WebSocketException)
             {
                 // Клиент отключился
                 _isConnected = false;
@@ -304,7 +290,7 @@ namespace GameServer
             }
         }
 
-        private void CleanupConnection()
+        private async Task CleanupConnectionAsync()
         {
             if (_isConnected)
             {
@@ -312,8 +298,10 @@ namespace GameServer
 
                 try
                 {
-                    _stream?.Close();
-                    _client?.Close();
+                    if (_webSocket.State == WebSocketState.Open)
+                    {
+                        await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Закрытие соединения", CancellationToken.None);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -324,7 +312,7 @@ namespace GameServer
 
                 if (!string.IsNullOrEmpty(PlayerName))
                 {
-                    _server.BroadcastMessage(JsonSerializer.Serialize(new { Type = "PlayerLeft", PlayerId, PlayerName }));
+                    await _server.BroadcastMessageAsync(JsonSerializer.Serialize(new { Type = "PlayerLeft", PlayerId, PlayerName }));
                 }
             }
         }

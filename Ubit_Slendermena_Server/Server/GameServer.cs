@@ -1,45 +1,47 @@
-﻿using GameServer.Data;
-using GameServer.Models;
-using Microsoft.EntityFrameworkCore;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net.Sockets;
 using System.Net;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
+using GameServer.Data;
+using GameServer.Models;
+using Microsoft.EntityFrameworkCore;
 
 namespace GameServer
 {
-    public class GameServer
+    public class GameServerWebSocket
     {
-        private TcpListener? _server;
+        private HttpListener _listener;
         private bool _isRunning;
-        private readonly List<ClientHandler> _clients = [];
-        private readonly Dictionary<int, Category> _categories = [];
-        private readonly Dictionary<int, Question> _questions = [];
+
+        readonly List<WebSocketClientHandler> _clients = new();
+        private readonly Dictionary<int, Category> _categories = new();
+        private readonly Dictionary<int, Question> _questions = new();
         private readonly string _connectionString;
-        private Game? _currentGame;
+        public Game _currentGame;
         private readonly object _clientsLock = new();
-        
-        public GameServer(string connectionString)
+
+        public GameServerWebSocket(string connectionString)
         {
             _connectionString = connectionString;
             LoadGameData();
         }
-
+       
         public void Start(int port)
         {
             try
             {
-                _server = new TcpListener(IPAddress.Any, port);
-                _server.Start();
+                _listener = new HttpListener();
+                _listener.Prefixes.Add($"http://*:{port}/");
+                _listener.Start();
                 _isRunning = true;
-                Console.WriteLine($"Сервер запущен на порту {port}");
+                Console.WriteLine($"WebSocket сервер запущен на порту {port}");
 
-                Thread acceptThread = new(AcceptClients) { IsBackground = true };
-                acceptThread.Start();
+                Task.Run(AcceptClientsAsync);
             }
             catch (Exception ex)
             {
@@ -48,36 +50,24 @@ namespace GameServer
             }
         }
 
-        private void AcceptClients()
+        private async Task AcceptClientsAsync()
         {
             while (_isRunning)
             {
                 try
                 {
-                    if (_server is null) break;
-
-                    Console.WriteLine("Ожидание подключений...");
-                    TcpClient client = _server.AcceptTcpClient();
-                    Console.WriteLine($"Новое подключение от {client.Client.RemoteEndPoint}");
-
-                    ClientHandler clientHandler = new(client, this);
-                    
-
-                    lock (_clientsLock)
+                    var context = await _listener.GetContextAsync();
+                    if (context.Request.IsWebSocketRequest)
                     {
-                        _clients.Add(clientHandler);
+                        ProcessWebSocketRequest(context);
                     }
-                    foreach (var clientAcc in _clients)
-                        Console.WriteLine(client);
-
-                    Thread clientThread = new(clientHandler.Handle) { IsBackground = true };
-                    clientThread.Start();
+                    else
+                    {
+                        context.Response.StatusCode = 400;
+                        context.Response.Close();
+                    }
                 }
-                catch (ObjectDisposedException)
-                {
-                    break;
-                }
-                catch (SocketException ex) when (!_isRunning)
+                catch (Exception ex) when (!_isRunning)
                 {
                     break;
                 }
@@ -89,16 +79,56 @@ namespace GameServer
             Console.WriteLine("Поток приема подключений завершен");
         }
 
-        public void BroadcastMessage(string message)
+        private async void ProcessWebSocketRequest(HttpListenerContext context)
         {
-            foreach (var client in _clients)
+            WebSocketContext webSocketContext = null;
+            WebSocket webSocket = null;
+
+            try
             {
-                client.SendMessage(message);
-                
+                webSocketContext = await context.AcceptWebSocketAsync(subProtocol: null);
+                webSocket = webSocketContext.WebSocket;
+
+                Console.WriteLine($"Новое WebSocket подключение от {context.Request.RemoteEndPoint}");
+
+                var clientHandler = new WebSocketClientHandler(webSocket, this);
+
+                lock (_clientsLock)
+                {
+                    _clients.Add(clientHandler);
+                }
+                Console.WriteLine($"Всего клиентов: {_clients.Count}");
+
+                await clientHandler.HandleAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка при обработке WebSocket запроса: {ex.Message}");
+
+                if (webSocket != null && webSocket.State == WebSocketState.Open)
+                {
+                    await webSocket.CloseAsync(WebSocketCloseStatus.InternalServerError,
+                        "Ошибка сервера", CancellationToken.None);
+                }
             }
         }
 
-        public void RemoveClient(ClientHandler client)
+        public async Task BroadcastMessageAsync(string message)
+        {
+            List<WebSocketClientHandler> clientsCopy;
+
+            lock (_clientsLock)
+            {
+                clientsCopy = new List<WebSocketClientHandler>(_clients);
+            }
+
+            foreach (var client in clientsCopy)
+            {
+                await client.SendMessageAsync(message);
+            }
+        }
+
+        public void RemoveClient(WebSocketClientHandler client)
         {
             lock (_clientsLock)
             {
@@ -129,7 +159,6 @@ namespace GameServer
                     foreach (var question in category.Questions)
                     {
                         _questions[question.Id] = question;
-                        Console.WriteLine();
                     }
                 }
 
@@ -142,42 +171,42 @@ namespace GameServer
             }
         }
 
-        public void StartNewGame(byte playerCount)
+        public async Task StartNewGameAsync(byte playerCount)
         {
-            List<ClientHandler> clientsCopy;
+            List<WebSocketClientHandler> clientsCopy;
             lock (_clientsLock)
             {
-                clientsCopy = new List<ClientHandler>(_clients.Where(c => c.IsConnected));
+                clientsCopy = new List<WebSocketClientHandler>(_clients.Where(c => c.IsConnected));
             }
 
             if (clientsCopy.Count < playerCount)
             {
-                BroadcastMessage(JsonSerializer.Serialize(new { Type = "Error", Message = "Недостаточно игроков для начала игры" }));
+                await BroadcastMessageAsync(JsonSerializer.Serialize(new { Type = "Error", Message = "Недостаточно игроков для начала игры" }));
                 return;
             }
-
-            _currentGame = new Game(clientsCopy, _categories, _questions, playerCount);
-            _currentGame.Start();
-
-            BroadcastMessage(JsonSerializer.Serialize(new
+            if (_currentGame == null)
             {
-                Type = "Start",
-                //Categories = _categories.Values,
-                //Players = clientsCopy.Select(c => new { c.PlayerId, c.PlayerName, c.Score }).ToList()
+                _currentGame = new Game(clientsCopy, _categories, _questions, playerCount);
+            }
+            
+
+            await BroadcastMessageAsync(JsonSerializer.Serialize(new
+            {
+                Type = "Start"
             }));
         }
 
-        public void ProcessAnswer(ClientHandler client, int questionId, string answer)
+        public async Task ProcessAnswerAsync(WebSocketClientHandler client, int questionId, string answer)
         {
             if (_currentGame?.CurrentQuestion?.Id != questionId)
             {
-                client.SendMessage(JsonSerializer.Serialize(new { Type = "Error", Message = "Неверный вопрос" }));
+                await client.SendMessageAsync(JsonSerializer.Serialize(new { Type = "Error", Message = "Неверный вопрос" }));
                 return;
             }
 
             bool isCorrect = _currentGame.CheckAnswer(client, answer);
 
-            BroadcastMessage(JsonSerializer.Serialize(new
+            await BroadcastMessageAsync(JsonSerializer.Serialize(new
             {
                 Type = "AnswerResult",
                 PlayerId = client.PlayerId,
@@ -188,7 +217,8 @@ namespace GameServer
                 NewScore = client.Score
             }));
 
-            Task.Delay(3000).ContinueWith(_ => _currentGame.NextQuestion());
+            await Task.Delay(3000);
+            _currentGame.NextQuestion();
         }
 
         public void Stop()
@@ -198,7 +228,8 @@ namespace GameServer
 
             try
             {
-                _server?.Stop();
+                _listener?.Stop();
+                _listener?.Close();
             }
             catch (Exception ex)
             {
@@ -207,6 +238,5 @@ namespace GameServer
 
             Console.WriteLine("Сервер остановлен");
         }
-
     }
 }

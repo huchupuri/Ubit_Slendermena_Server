@@ -11,21 +11,24 @@ namespace GameServer
     public class Game
     {
         private readonly byte _maxPlayers;
-        private readonly List<ClientHandler> _players;
+        private readonly List<WebSocketClientHandler> _players;
         private readonly Dictionary<int, Category> _categories;
         private readonly Dictionary<int, Question> _questions;
         private readonly List<int> _availableQuestions;
         public Question? CurrentQuestion { get; private set; }
 
-        public Game(List<ClientHandler> players, Dictionary<int, Category> categories, Dictionary<int, Question> questions, byte maxPlayers)
+        public Game(List<WebSocketClientHandler> players, Dictionary<int, Category> categories, Dictionary<int, Question> questions, byte maxPlayers)
         {
             _players = players;
             _categories = categories;
             _questions = questions;
-            _availableQuestions = [.. questions.Keys];
+            _availableQuestions = new List<int>(questions.Keys);
             _maxPlayers = maxPlayers;
         }
-
+        public List<WebSocketClientHandler> GetPlayers()
+        {
+            return _players;
+        }
         public void Start()
         {
             Console.WriteLine("Начало новой игры");
@@ -70,11 +73,11 @@ namespace GameServer
 
             foreach (var player in _players.Where(p => p.IsConnected))
             {
-                player.SendMessage(message);
+                _ = player.SendMessageAsync(message);
             }
         }
 
-        public bool CheckAnswer(ClientHandler player, string answer)
+        public bool CheckAnswer(WebSocketClientHandler player, string answer)
         {
             if (CurrentQuestion is null)
                 return false;
@@ -97,7 +100,7 @@ namespace GameServer
 
         private void EndGame()
         {
-            ClientHandler? winner = _players.Where(p => p.IsConnected).MaxBy(p => p.Score);
+            WebSocketClientHandler? winner = _players.Where(p => p.IsConnected).MaxBy(p => p.Score);
 
             Console.WriteLine($"Игра окончена. Победитель: {winner?.PlayerName} ({winner?.Score} очков)");
 
@@ -110,7 +113,7 @@ namespace GameServer
 
             foreach (var player in _players.Where(p => p.IsConnected))
             {
-                player.SendMessage(message);
+                _ = player.SendMessageAsync(message);
             }
         }
     }

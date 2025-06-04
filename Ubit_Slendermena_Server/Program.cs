@@ -7,7 +7,7 @@ namespace GameServerApp
     {
         static async Task Main(string[] args)
         {
-            Console.WriteLine("🎮 Запуск сервера 'Своя игра'...");
+            Console.WriteLine("🎮 Запуск WebSocket сервера 'Своя игра'...");
 
             string connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING") ??
                 "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
@@ -17,21 +17,20 @@ namespace GameServerApp
                 port = 5000;
             }
 
-            GameServer.GameServer? server = null;
+            GameServer.GameServerWebSocket? server = null;
 
             try
             {
                 await WaitForDatabaseAsync(connectionString);
 
-                server = new GameServer.GameServer(connectionString);
+                server = new GameServer.GameServerWebSocket(connectionString);
                 server.Start(port);
 
-                Console.WriteLine("Сервер запущен успешно!");
+                Console.WriteLine("WebSocket сервер запущен успешно!");
                 Console.WriteLine("Логи сервера:");
-                while (true)
-                {
-                    await Task.Delay(1000);
-                }
+
+                // Keep the application running
+                await Task.Delay(Timeout.Infinite);
             }
             catch (Exception ex)
             {
@@ -47,8 +46,7 @@ namespace GameServerApp
             optionsBuilder.UseNpgsql(connectionString);
 
             await using var context = new GameDbContext(optionsBuilder.Options);
-            context.Database.Migrate();
-            DbInitializer.Initialize(context);
+
             for (int i = 0; i < 10; i++)
             {
                 try
@@ -57,6 +55,8 @@ namespace GameServerApp
                     {
                         Console.WriteLine("База данных подключена");
                         await context.Database.EnsureCreatedAsync();
+                        context.Database.Migrate();
+                        DbInitializer.Initialize(context);
                         Console.WriteLine("✅ База данных готова");
                         return;
                     }
