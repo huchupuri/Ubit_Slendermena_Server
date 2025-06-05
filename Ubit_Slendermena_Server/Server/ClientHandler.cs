@@ -35,7 +35,7 @@ namespace GameServer
 
         public async Task HandleAsync()
         {
-            var buffer = new byte[8192]; // Увеличиваем буфер для больших сообщений
+            var buffer = new byte[16384]; // Увеличиваем буфер для больших сообщений
             var receiveBuffer = new ArraySegment<byte>(buffer);
 
             try
@@ -166,13 +166,20 @@ namespace GameServer
                 try
                 {
                     // Проверяем наличие пользовательских вопросов
-                    CustomQuestionSet customQuestions = null;
+                    QuestionFile customQuestions = null;
                     if (data.TryGetValue("customQuestions", out var customQuestionsElement) &&
                         customQuestionsElement.ValueKind == JsonValueKind.Object)
                     {
                         try
                         {
-                            customQuestions = JsonSerializer.Deserialize<CustomQuestionSet>(customQuestionsElement.GetRawText());
+                            string customQuestionsJson = customQuestionsElement.GetRawText();
+                            Console.WriteLine($"Получены пользовательские вопросы JSON: {customQuestionsJson}");
+
+                            customQuestions = JsonSerializer.Deserialize<QuestionFile>(customQuestionsJson, new JsonSerializerOptions
+                            {
+                                PropertyNameCaseInsensitive = true
+                            });
+
                             Console.WriteLine($"Получены пользовательские вопросы: {customQuestions?.Categories?.Count} категорий");
                         }
                         catch (Exception ex)
@@ -503,5 +510,24 @@ namespace GameServer
                 }
             }
         }
+    }
+
+    // Модель для получения пользовательских вопросов на сервере
+    public class QuestionFile
+    {
+        public List<CategoryFile> Categories { get; set; } = new();
+    }
+
+    public class CategoryFile
+    {
+        public string Name { get; set; } = string.Empty;
+        public List<QuestionFile_Item> Questions { get; set; } = new();
+    }
+
+    public class QuestionFile_Item
+    {
+        public string Text { get; set; } = string.Empty;
+        public string Answer { get; set; } = string.Empty;
+        public int Price { get; set; }
     }
 }

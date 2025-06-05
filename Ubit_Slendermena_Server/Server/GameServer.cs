@@ -116,7 +116,7 @@ namespace GameServer
         }
 
         // ОБНОВЛЕННЫЙ МЕТОД: Создание игры с поддержкой пользовательских вопросов
-        public async Task<bool> CreateGameAsync(WebSocketClientHandler host, int playerCount, string hostName, CustomQuestionSet customQuestions = null)
+        public async Task<bool> CreateGameAsync(WebSocketClientHandler host, int playerCount, string hostName, QuestionFile customQuestions = null)
         {
             lock (_gameSessionLock)
             {
@@ -141,6 +141,12 @@ namespace GameServer
 
                 string questionsInfo = customQuestions != null ? " с пользовательскими вопросами" : "";
                 Console.WriteLine($"Игра создана хостом {hostName} на {playerCount} игроков{questionsInfo}");
+
+                if (customQuestions != null)
+                {
+                    Console.WriteLine($"Пользовательские вопросы: {customQuestions.Categories.Count} категорий, {customQuestions.Categories.Sum(c => c.Questions.Count)} вопросов");
+                }
+
                 return true;
             }
         }
@@ -230,14 +236,20 @@ namespace GameServer
             {
                 // Используем пользовательские вопросы
                 (gameCategories, gameQuestions) = ConvertCustomQuestions(_gameSession.CustomQuestions);
-                Console.WriteLine($"Используются пользовательские вопросы: {gameCategories.Count} категорий, {gameQuestions.Count} вопросов");
+                Console.WriteLine($"ИСПОЛЬЗУЮТСЯ ПОЛЬЗОВАТЕЛЬСКИЕ ВОПРОСЫ: {gameCategories.Count} категорий, {gameQuestions.Count} вопросов");
+
+                // Выводим список категорий для отладки
+                foreach (var cat in gameCategories.Values)
+                {
+                    Console.WriteLine($"Категория: {cat.Name} (ID: {cat.Id})");
+                }
             }
             else
             {
                 // Используем стандартные вопросы из базы данных
                 gameCategories = _categories;
                 gameQuestions = _questions;
-                Console.WriteLine("Используются стандартные вопросы из базы данных");
+                Console.WriteLine("ИСПОЛЬЗУЮТСЯ СТАНДАРТНЫЕ ВОПРОСЫ из базы данных");
             }
 
             // Создаем игру с участниками
@@ -253,13 +265,16 @@ namespace GameServer
         }
 
         // НОВЫЙ МЕТОД: Конвертация пользовательских вопросов в формат игры
-        private (Dictionary<int, Category> categories, Dictionary<int, Question> questions) ConvertCustomQuestions(CustomQuestionSet customQuestions)
+        private (Dictionary<int, Category> categories, Dictionary<int, Question> questions) ConvertCustomQuestions(QuestionFile customQuestions)
         {
             var categories = new Dictionary<int, Category>();
             var questions = new Dictionary<int, Question>();
 
             int categoryId = 1;
             int questionId = 1;
+
+            Console.WriteLine($"=== НАЧАЛО КОНВЕРТАЦИИ ПОЛЬЗОВАТЕЛЬСКИХ ВОПРОСОВ ===");
+            Console.WriteLine($"Входящие категории: {customQuestions.Categories.Count}");
 
             foreach (var customCategory in customQuestions.Categories)
             {
@@ -270,6 +285,7 @@ namespace GameServer
                 };
 
                 categories[categoryId] = category;
+                Console.WriteLine($"Создана категория {categoryId}: '{customCategory.Name}' ({customCategory.Questions.Count} вопросов)");
 
                 foreach (var customQuestion in customCategory.Questions)
                 {
@@ -284,11 +300,16 @@ namespace GameServer
                     };
 
                     questions[questionId] = question;
+                    Console.WriteLine($"  Вопрос {questionId}: '{customQuestion.Text}' -> '{customQuestion.Answer}' ({customQuestion.Price} очков)");
                     questionId++;
                 }
 
                 categoryId++;
             }
+
+            Console.WriteLine($"=== КОНВЕРТАЦИЯ ЗАВЕРШЕНА ===");
+            Console.WriteLine($"Создано категорий: {categories.Count}");
+            Console.WriteLine($"Создано вопросов: {questions.Count}");
 
             return (categories, questions);
         }
@@ -409,6 +430,14 @@ namespace GameServer
 
         public async Task StartNewGameAsync(WebSocketClientHandler client, byte playerCount)
         {
+            // Если есть активная игровая сессия, используем её
+            if (_gameSession != null && !_gameSession.IsStarted)
+            {
+                Console.WriteLine("Запуск существующей игровой сессии");
+                await StartGameSessionAsync();
+                return;
+            }
+
             // Проверяем, достаточно ли игроков
             List<WebSocketClientHandler> availablePlayers;
             lock (_clientsLock)
@@ -426,7 +455,22 @@ namespace GameServer
                 return;
             }
 
-            _currentGame = new Game(availablePlayers.Take(playerCount).ToList(), _categories, _questions, playerCount, this);
+            // Определяем, какие вопросы использовать
+            Dictionary<int, Category> gameCategories = _categories;
+            Dictionary<int, Question> gameQuestions = _questions;
+
+            // Если есть игровая сессия с пользовательскими вопросами
+            if (_gameSession?.CustomQuestions != null)
+            {
+                (gameCategories, gameQuestions) = ConvertCustomQuestions(_gameSession.CustomQuestions);
+                Console.WriteLine($"ИСПОЛЬЗУЮТСЯ ПОЛЬЗОВАТЕЛЬСКИЕ ВОПРОСЫ: {gameCategories.Count} категорий, {gameQuestions.Count} вопросов");
+            }
+            else
+            {
+                Console.WriteLine("ИСПОЛЬЗУЮТСЯ СТАНДАРТНЫЕ ВОПРОСЫ из базы данных");
+            }
+
+            _currentGame = new Game(availablePlayers.Take(playerCount).ToList(), gameCategories, gameQuestions, playerCount, this);
             _currentGame.Start();
 
             await client.SendMessageAsync(JsonSerializer.Serialize(new
@@ -452,6 +496,7 @@ namespace GameServer
                 return;
             }
 
+            Console.WriteLine($"Выбран вопрос из категории {categoryId}: {question.Text}");
             await _currentGame.ShowQuestionAsync(question);
         }
 
@@ -494,6 +539,6 @@ namespace GameServer
         public List<WebSocketClientHandler> Players { get; set; }
         public bool IsStarted { get; set; }
         public DateTime CreatedAt { get; set; }
-        public CustomQuestionSet CustomQuestions { get; set; } // Добавляем поддержку пользовательских вопросов
+        public QuestionFile CustomQuestions { get; set; } // Используем ваши модели
     }
 }
