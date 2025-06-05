@@ -17,12 +17,16 @@ namespace GameServer
     {
         private HttpListener _listener;
         private bool _isRunning;
-        private readonly List<WebSocketClientHandler> _clients = new();
+        public readonly List<WebSocketClientHandler> _clients = new();
         private readonly Dictionary<int, Category> _categories = new();
         private readonly Dictionary<int, Question> _questions = new();
         private readonly string _connectionString;
         public Game _currentGame;
         private readonly object _clientsLock = new();
+
+        // Добавляем управление игровыми сессиями
+        private GameSession _gameSession = null;
+        private readonly object _gameSessionLock = new();
 
         public GameServerWebSocket(string connectionString)
         {
@@ -111,6 +115,184 @@ namespace GameServer
             }
         }
 
+        // ОБНОВЛЕННЫЙ МЕТОД: Создание игры с поддержкой пользовательских вопросов
+        public async Task<bool> CreateGameAsync(WebSocketClientHandler host, int playerCount, string hostName, CustomQuestionSet customQuestions = null)
+        {
+            lock (_gameSessionLock)
+            {
+                // Проверяем, не создана ли уже игра
+                if (_gameSession != null)
+                {
+                    Console.WriteLine($"Игра уже создана хостом {_gameSession.HostName}");
+                    return false;
+                }
+
+                // Создаем новую игровую сессию
+                _gameSession = new GameSession
+                {
+                    Host = host,
+                    HostName = hostName,
+                    MaxPlayers = playerCount,
+                    Players = new List<WebSocketClientHandler> { host },
+                    IsStarted = false,
+                    CreatedAt = DateTime.Now,
+                    CustomQuestions = customQuestions // Сохраняем пользовательские вопросы
+                };
+
+                string questionsInfo = customQuestions != null ? " с пользовательскими вопросами" : "";
+                Console.WriteLine($"Игра создана хостом {hostName} на {playerCount} игроков{questionsInfo}");
+                return true;
+            }
+        }
+
+        // НОВЫЙ МЕТОД: Присоединение к игре
+        public async Task<string> JoinGameAsync(WebSocketClientHandler client, string playerName)
+        {
+            // Проверяем, есть ли созданная игра
+            if (_gameSession == null)
+            {
+                Console.WriteLine($"Игрок {playerName} пытается присоединиться, но игра не создана");
+                return "NoGame";
+            }
+
+            // Проверяем, не началась ли уже игра
+            if (_gameSession.IsStarted)
+            {
+                Console.WriteLine($"Игрок {playerName} пытается присоединиться к уже начатой игре");
+                return "GameStarted";
+            }
+
+            // Проверяем, не заполнена ли игра
+            if (_gameSession.Players.Count >= _gameSession.MaxPlayers)
+            {
+                Console.WriteLine($"Игрок {playerName} пытается присоединиться к заполненной игре");
+                return "GameFull";
+            }
+
+            // Проверяем, не присоединен ли уже этот игрок
+            if (_gameSession.Players.Any(p => p.PlayerName == playerName))
+            {
+                Console.WriteLine($"Игрок {playerName} уже присоединен к игре");
+                return "AlreadyJoined";
+            }
+
+            // Добавляем игрока в игру
+            _gameSession.Players.Add(client);
+            Console.WriteLine($"Игрок {playerName} присоединился к игре. Игроков: {_gameSession.Players.Count}/{_gameSession.MaxPlayers}");
+
+            // Уведомляем всех игроков о новом участнике
+            await BroadcastToGamePlayersAsync(JsonSerializer.Serialize(new
+            {
+                Type = "PlayerJoined",
+                PlayerName = playerName,
+                CurrentPlayers = _gameSession.Players.Count,
+                MaxPlayers = _gameSession.MaxPlayers
+            }));
+
+            // Если игра заполнена, автоматически начинаем её
+            if (_gameSession.Players.Count == _gameSession.MaxPlayers)
+            {
+                await StartGameSessionAsync();
+            }
+
+            return "Success";
+        }
+
+        // НОВЫЙ МЕТОД: Отправка сообщения только игрокам в текущей игре
+        private async Task BroadcastToGamePlayersAsync(string message)
+        {
+            if (_gameSession?.Players != null)
+            {
+                foreach (var player in _gameSession.Players.Where(p => p.IsConnected))
+                {
+                    await player.SendMessageAsync(message);
+                }
+            }
+        }
+
+        // ОБНОВЛЕННЫЙ МЕТОД: Начало игровой сессии с поддержкой пользовательских вопросов
+        private async Task StartGameSessionAsync()
+        {
+            if (_gameSession == null) return;
+
+            lock (_gameSessionLock)
+            {
+                _gameSession.IsStarted = true;
+            }
+
+            Console.WriteLine($"Начинаем игру с {_gameSession.Players.Count} игроками");
+
+            // Определяем, какие вопросы использовать
+            Dictionary<int, Category> gameCategories;
+            Dictionary<int, Question> gameQuestions;
+
+            if (_gameSession.CustomQuestions != null)
+            {
+                // Используем пользовательские вопросы
+                (gameCategories, gameQuestions) = ConvertCustomQuestions(_gameSession.CustomQuestions);
+                Console.WriteLine($"Используются пользовательские вопросы: {gameCategories.Count} категорий, {gameQuestions.Count} вопросов");
+            }
+            else
+            {
+                // Используем стандартные вопросы из базы данных
+                gameCategories = _categories;
+                gameQuestions = _questions;
+                Console.WriteLine("Используются стандартные вопросы из базы данных");
+            }
+
+            // Создаем игру с участниками
+            _currentGame = new Game(_gameSession.Players, gameCategories, gameQuestions, (byte)_gameSession.MaxPlayers, this);
+            _currentGame.Start();
+
+            // Уведомляем всех игроков о начале игры
+            await BroadcastToGamePlayersAsync(JsonSerializer.Serialize(new
+            {
+                Type = "GameStarted",
+                Players = _gameSession.Players.Select(p => new { p.PlayerId, p.PlayerName, p.Score }).ToList()
+            }));
+        }
+
+        // НОВЫЙ МЕТОД: Конвертация пользовательских вопросов в формат игры
+        private (Dictionary<int, Category> categories, Dictionary<int, Question> questions) ConvertCustomQuestions(CustomQuestionSet customQuestions)
+        {
+            var categories = new Dictionary<int, Category>();
+            var questions = new Dictionary<int, Question>();
+
+            int categoryId = 1;
+            int questionId = 1;
+
+            foreach (var customCategory in customQuestions.Categories)
+            {
+                var category = new Category
+                {
+                    Id = categoryId,
+                    Name = customCategory.Name
+                };
+
+                categories[categoryId] = category;
+
+                foreach (var customQuestion in customCategory.Questions)
+                {
+                    var question = new Question
+                    {
+                        Id = questionId,
+                        CategoryId = categoryId,
+                        Text = customQuestion.Text,
+                        Answer = customQuestion.Answer,
+                        Price = customQuestion.Price,
+                        Category = category
+                    };
+
+                    questions[questionId] = question;
+                    questionId++;
+                }
+
+                categoryId++;
+            }
+
+            return (categories, questions);
+        }
+
         public async Task BroadcastMessageAsync(string message)
         {
             List<WebSocketClientHandler> clientsCopy;
@@ -126,6 +308,7 @@ namespace GameServer
             }
         }
 
+        // ОБНОВЛЕННЫЙ МЕТОД: Удаление клиента с учетом игровых сессий
         public void RemoveClient(WebSocketClientHandler client)
         {
             lock (_clientsLock)
@@ -133,6 +316,63 @@ namespace GameServer
                 if (_clients.Remove(client))
                 {
                     Console.WriteLine($"Клиент {client.PlayerName} отключен. Всего клиентов: {_clients.Count}");
+                }
+            }
+
+            // Удаляем игрока из игровой сессии, если он в ней участвует
+            lock (_gameSessionLock)
+            {
+                if (_gameSession?.Players != null)
+                {
+                    if (_gameSession.Players.Remove(client))
+                    {
+                        Console.WriteLine($"Игрок {client.PlayerName} удален из игровой сессии");
+
+                        // Если это был хост, завершаем игру
+                        if (_gameSession.Host == client)
+                        {
+                            Console.WriteLine("Хост покинул игру. Завершаем игровую сессию.");
+                            EndGameSession();
+                        }
+                        // Если игроков не осталось, завершаем игру
+                        else if (_gameSession.Players.Count == 0)
+                        {
+                            Console.WriteLine("Все игроки покинули игру. Завершаем игровую сессию.");
+                            EndGameSession();
+                        }
+                        else
+                        {
+                            // Уведомляем оставшихся игроков
+                            BroadcastToGamePlayersAsync(JsonSerializer.Serialize(new
+                            {
+                                Type = "PlayerLeft",
+                                PlayerName = client.PlayerName,
+                                CurrentPlayers = _gameSession.Players.Count,
+                                MaxPlayers = _gameSession.MaxPlayers
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
+        // НОВЫЙ МЕТОД: Завершение игровой сессии
+        private void EndGameSession()
+        {
+            lock (_gameSessionLock)
+            {
+                if (_gameSession != null)
+                {
+                    // Уведомляем всех оставшихся игроков о завершении игры
+                    BroadcastToGamePlayersAsync(JsonSerializer.Serialize(new
+                    {
+                        Type = "GameEnded",
+                        Reason = "Host disconnected or no players left"
+                    }));
+
+                    _gameSession = null;
+                    _currentGame = null;
+                    Console.WriteLine("Игровая сессия завершена");
                 }
             }
         }
@@ -167,27 +407,32 @@ namespace GameServer
             }
         }
 
-        public async Task StartNewGameAsync(byte playerCount)
+        public async Task StartNewGameAsync(WebSocketClientHandler client, byte playerCount)
         {
-            List<WebSocketClientHandler> clientsCopy;
+            // Проверяем, достаточно ли игроков
+            List<WebSocketClientHandler> availablePlayers;
             lock (_clientsLock)
             {
-                clientsCopy = new List<WebSocketClientHandler>(_clients.Where(c => c.IsConnected));
+                availablePlayers = _clients.Where(c => c.IsConnected).ToList();
             }
 
-            if (clientsCopy.Count < playerCount)
+            if (availablePlayers.Count < playerCount)
             {
-                await BroadcastMessageAsync(JsonSerializer.Serialize(new { Type = "Error", Message = "Недостаточно игроков для начала игры" }));
+                await client.SendMessageAsync(JsonSerializer.Serialize(new
+                {
+                    Type = "Error",
+                    Message = $"Недостаточно игроков для начала игры. Подключено: {availablePlayers.Count}, требуется: {playerCount}"
+                }));
                 return;
             }
 
-            _currentGame = new Game(clientsCopy, _categories, _questions, playerCount, this);
+            _currentGame = new Game(availablePlayers.Take(playerCount).ToList(), _categories, _questions, playerCount, this);
             _currentGame.Start();
 
-            await BroadcastMessageAsync(JsonSerializer.Serialize(new
+            await client.SendMessageAsync(JsonSerializer.Serialize(new
             {
                 Type = "GameStarted",
-                Players = clientsCopy.Select(c => new { c.PlayerId, c.PlayerName, c.Score }).ToList()
+                Players = availablePlayers.Take(playerCount).Select(c => new { c.PlayerId, c.PlayerName, c.Score }).ToList()
             }));
         }
 
@@ -199,8 +444,8 @@ namespace GameServer
                 return;
             }
 
-            var question = _questions.Values.FirstOrDefault(q => q.CategoryId == categoryId && !_currentGame.IsQuestionAnswered(q.Id));
-            
+            var question = _currentGame.GetAvailableQuestionByCategory(categoryId);
+
             if (question == null)
             {
                 await client.SendMessageAsync(JsonSerializer.Serialize(new { Type = "Error", Message = "Вопрос не найден или уже отвечен" }));
@@ -238,5 +483,17 @@ namespace GameServer
 
             Console.WriteLine("Сервер остановлен");
         }
+    }
+
+    // ОБНОВЛЕННЫЙ КЛАСС: Игровая сессия с поддержкой пользовательских вопросов
+    public class GameSession
+    {
+        public WebSocketClientHandler Host { get; set; }
+        public string HostName { get; set; }
+        public int MaxPlayers { get; set; }
+        public List<WebSocketClientHandler> Players { get; set; }
+        public bool IsStarted { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public CustomQuestionSet CustomQuestions { get; set; } // Добавляем поддержку пользовательских вопросов
     }
 }

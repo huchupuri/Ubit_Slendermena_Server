@@ -10,7 +10,7 @@ namespace GameServer
     public class Game
     {
         private readonly byte _maxPlayers;
-        private readonly List<WebSocketClientHandler> _players;
+        public readonly List<WebSocketClientHandler> _players;
         private readonly Dictionary<int, Category> _categories;
         private readonly Dictionary<int, Question> _questions;
         private readonly HashSet<int> _answeredQuestions = new();
@@ -62,6 +62,12 @@ namespace GameServer
         public bool IsQuestionAnswered(int questionId)
         {
             return _answeredQuestions.Contains(questionId);
+        }
+
+        // НОВЫЙ МЕТОД: Получение доступного вопроса по категории
+        public Question GetAvailableQuestionByCategory(int categoryId)
+        {
+            return _questions.Values.FirstOrDefault(q => q.CategoryId == categoryId && !IsQuestionAnswered(q.Id));
         }
 
         public async Task ShowQuestionAsync(Question question)

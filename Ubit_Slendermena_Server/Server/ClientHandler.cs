@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -33,7 +35,7 @@ namespace GameServer
 
         public async Task HandleAsync()
         {
-            var buffer = new byte[4096];
+            var buffer = new byte[8192]; // Увеличиваем буфер для больших сообщений
             var receiveBuffer = new ArraySegment<byte>(buffer);
 
             try
@@ -42,18 +44,34 @@ namespace GameServer
 
                 while (_isConnected && _webSocket.State == WebSocketState.Open)
                 {
-                    WebSocketReceiveResult result = await _webSocket.ReceiveAsync(receiveBuffer, CancellationToken.None);
+                    var messageBuilder = new StringBuilder();
+                    WebSocketReceiveResult result;
 
-                    if (result.MessageType == WebSocketMessageType.Close)
+                    do
                     {
-                        Console.WriteLine($"Клиент {PlayerName} отключился");
-                        await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Клиент отключился", CancellationToken.None);
-                        break;
-                    }
+                        result = await _webSocket.ReceiveAsync(receiveBuffer, CancellationToken.None);
 
-                    string message = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    Console.WriteLine($"Получено от {PlayerName}: {message}");
-                    await ProcessMessageAsync(message);
+                        if (result.MessageType == WebSocketMessageType.Close)
+                        {
+                            Console.WriteLine($"Клиент {PlayerName} отключился");
+                            await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Клиент отключился", CancellationToken.None);
+                            break;
+                        }
+
+                        if (result.MessageType == WebSocketMessageType.Text)
+                        {
+                            string chunk = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                            messageBuilder.Append(chunk);
+                        }
+                    }
+                    while (!result.EndOfMessage);
+
+                    if (messageBuilder.Length > 0)
+                    {
+                        string message = messageBuilder.ToString();
+                        Console.WriteLine($"Получено от {PlayerName}: {message}");
+                        await ProcessMessageAsync(message);
+                    }
                 }
             }
             catch (WebSocketException)
@@ -70,56 +88,6 @@ namespace GameServer
             }
         }
 
-        private void AddUserToDatabase(string username, string password)
-        {
-            try
-            {
-                var optionsBuilder = new DbContextOptionsBuilder<GameDbContext>();
-                string connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING") ??
-                    "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
-                optionsBuilder.UseNpgsql(connectionString);
-
-                using var context = new GameDbContext(optionsBuilder.Options);
-
-                var existingUser = context.Players.FirstOrDefault(u => u.Username == username);
-
-                if (existingUser == null)
-                {
-                    var newUser = new Player
-                    {
-                        Username = username,
-                        Password_hash = PasswordHasher.HashPassword(password),
-                        TotalGames = 0,
-                        Wins = 0,
-                        TotalScore = 0
-                    };
-
-                    context.Players.Add(newUser);
-                    context.SaveChanges();
-                    Console.WriteLine($"Пользователь {username} добавлен в базу данных");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Ошибка при добавлении пользователя в базу данных: {ex.Message}");
-            }
-        }
-
-        private (bool isAuthenticated, Player player) AuthenticatePlayer(string username, string password)
-        {
-            var optionsBuilder = new DbContextOptionsBuilder<GameDbContext>();
-            string connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING") ??
-                "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
-            optionsBuilder.UseNpgsql(connectionString);
-
-            using var db = new GameDbContext(optionsBuilder.Options);
-            var player = db.Players.FirstOrDefault(p => p.Username == username);
-
-            if (player == null)
-                return (false, null);
-            return (player.Password_hash == PasswordHasher.HashPassword(password), player);
-        }
-
         private async Task ProcessMessageAsync(string message)
         {
             try
@@ -132,57 +100,11 @@ namespace GameServer
                     switch (type)
                     {
                         case "Login":
-                            if (data.TryGetValue("Username", out var nameElement) &&
-                                nameElement.GetString() is string Username &&
-                                data.TryGetValue("Password", out var passwordElement) &&
-                                passwordElement.GetString() is string password)
-                            {
-                                var (isAuthenticated, player) = AuthenticatePlayer(Username, password);
+                            await HandleLoginAsync(data);
+                            break;
 
-                                PlayerName = Username;
-                                if (isAuthenticated)
-                                {
-                                    Console.WriteLine($"Игрок {PlayerName} успешно авторизовался");
-
-                                    await SendMessageAsync(JsonSerializer.Serialize(new
-                                    {
-                                        Type = "LoginSuccess",
-                                        Id = player.Id,
-                                        Username,
-                                        TotalGames = player.TotalGames,
-                                        Wins = player.Wins,
-                                        TotalScore = player.TotalScore
-                                    }));
-
-                                    await _server.BroadcastMessageAsync(JsonSerializer.Serialize(new
-                                    {
-                                        Type = "PlayerJoined",
-                                        PlayerName = Username
-                                    }));
-                                }
-                                else
-                                {
-                                    AddUserToDatabase(Username, password);
-                                    Console.WriteLine($"Игрок {Username} успешно зарегистрирован");
-
-                                    var (isAuthenticated1, player2) = AuthenticatePlayer(Username, password);
-                                    await SendMessageAsync(JsonSerializer.Serialize(new
-                                    {
-                                        Type = "LoginSuccess",
-                                        Id = player2.Id,
-                                        Username = player2.Username,
-                                        TotalGames = player2.TotalGames,
-                                        Wins = player2.Wins,
-                                        TotalScore = player2.TotalScore
-                                    }));
-
-                                    await _server.BroadcastMessageAsync(JsonSerializer.Serialize(new
-                                    {
-                                        Type = "PlayerJoined",
-                                        PlayerName = Username
-                                    }));
-                                }
-                            }
+                        case "Register":
+                            await HandleRegisterAsync(data);
                             break;
 
                         case "SelectQuestion":
@@ -201,8 +123,16 @@ namespace GameServer
                                 playerCount.TryGetByte(out byte PlayerCount))
                             {
                                 Console.WriteLine($"Игрок {PlayerName} запросил начало игры");
-                                await _server.StartNewGameAsync(PlayerCount);
+                                await _server.StartNewGameAsync(this, PlayerCount);
                             }
+                            break;
+
+                        case "CreateGame":
+                            await HandleCreateGameAsync(data);
+                            break;
+
+                        case "JoinGame":
+                            await HandleJoinGameAsync(data);
                             break;
 
                         case "Answer":
@@ -222,6 +152,304 @@ namespace GameServer
             catch (Exception ex)
             {
                 Console.WriteLine($"Ошибка обработки сообщения от {PlayerName}: {ex.Message}");
+            }
+        }
+
+        private async Task HandleCreateGameAsync(Dictionary<string, JsonElement> data)
+        {
+            if (data.TryGetValue("playerCount", out var playerCountElement) &&
+                playerCountElement.ValueKind == JsonValueKind.Number &&
+                playerCountElement.TryGetByte(out byte playerCount) &&
+                data.TryGetValue("hostName", out var hostNameElement) &&
+                hostNameElement.GetString() is string hostName)
+            {
+                try
+                {
+                    // Проверяем наличие пользовательских вопросов
+                    CustomQuestionSet customQuestions = null;
+                    if (data.TryGetValue("customQuestions", out var customQuestionsElement) &&
+                        customQuestionsElement.ValueKind == JsonValueKind.Object)
+                    {
+                        try
+                        {
+                            customQuestions = JsonSerializer.Deserialize<CustomQuestionSet>(customQuestionsElement.GetRawText());
+                            Console.WriteLine($"Получены пользовательские вопросы: {customQuestions?.Categories?.Count} категорий");
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Ошибка десериализации пользовательских вопросов: {ex.Message}");
+                        }
+                    }
+
+                    bool gameCreated = await _server.CreateGameAsync(this, playerCount, hostName, customQuestions);
+
+                    if (gameCreated)
+                    {
+                        await SendMessageAsync(JsonSerializer.Serialize(new
+                        {
+                            Type = "GameCreated",
+                            PlayerCount = playerCount,
+                            HostName = hostName,
+                            HasCustomQuestions = customQuestions != null
+                        }));
+
+                        Console.WriteLine($"Игрок {PlayerName} создал игру на {playerCount} игроков" +
+                                        (customQuestions != null ? " с пользовательскими вопросами" : ""));
+
+                        if (playerCount == 1)
+                        {
+                            await _server.StartNewGameAsync(this, playerCount);
+                        }
+                    }
+                    else
+                    {
+                        await SendMessageAsync(JsonSerializer.Serialize(new
+                        {
+                            Type = "Error",
+                            Message = "Не удалось создать игру. Возможно, игра уже существует."
+                        }));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Ошибка при создании игры: {ex.Message}");
+                    await SendMessageAsync(JsonSerializer.Serialize(new
+                    {
+                        Type = "Error",
+                        Message = "Ошибка при создании игры"
+                    }));
+                }
+            }
+        }
+
+        private async Task HandleJoinGameAsync(Dictionary<string, JsonElement> data)
+        {
+            if (data.TryGetValue("playerName", out var playerNameElement) &&
+                playerNameElement.GetString() is string playerName)
+            {
+                try
+                {
+                    var joinResult = await _server.JoinGameAsync(this, playerName);
+
+                    switch (joinResult)
+                    {
+                        case "Success":
+                            Console.WriteLine($"Игрок {PlayerName} присоединился к игре");
+                            await SendMessageAsync(JsonSerializer.Serialize(new
+                            {
+                                Type = "GameJoined",
+                                PlayerName = playerName
+                            }));
+                            break;
+
+                        case "GameFull":
+                            await SendMessageAsync(JsonSerializer.Serialize(new
+                            {
+                                Type = "GameFull"
+                            }));
+                            break;
+
+                        case "NoGame":
+                            await SendMessageAsync(JsonSerializer.Serialize(new
+                            {
+                                Type = "NoGameAvailable"
+                            }));
+                            break;
+
+                        default:
+                            await SendMessageAsync(JsonSerializer.Serialize(new
+                            {
+                                Type = "Error",
+                                Message = "Не удалось присоединиться к игре"
+                            }));
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Ошибка при присоединении к игре: {ex.Message}");
+                    await SendMessageAsync(JsonSerializer.Serialize(new
+                    {
+                        Type = "Error",
+                        Message = "Ошибка при присоединении к игре"
+                    }));
+                }
+            }
+        }
+
+        // Остальные методы остаются без изменений...
+        private async Task<bool> RegisterPlayerAsync(string username, string password)
+        {
+            try
+            {
+                var optionsBuilder = new DbContextOptionsBuilder<GameDbContext>();
+                string connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING") ??
+                    "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
+                optionsBuilder.UseNpgsql(connectionString);
+
+                using var context = new GameDbContext(optionsBuilder.Options);
+
+                // Проверяем, существует ли уже пользователь
+                var existingUser = await context.Players.FirstOrDefaultAsync(u => u.Username == username);
+                if (existingUser != null)
+                {
+                    return false; // Пользователь уже существует
+                }
+
+                // Создаем нового пользователя
+                var newUser = new Player
+                {
+                    Username = username,
+                    Password_hash = PasswordHasher.HashPassword(password),
+                    TotalGames = 0,
+                    Wins = 0,
+                    TotalScore = 0
+                };
+
+                context.Players.Add(newUser);
+                await context.SaveChangesAsync();
+                Console.WriteLine($"Пользователь {username} успешно зарегистрирован");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка при регистрации пользователя: {ex.Message}");
+                return false;
+            }
+        }
+
+        private async Task<(bool isAuthenticated, Player player)> AuthenticatePlayerAsync(string username, string password)
+        {
+            try
+            {
+                var optionsBuilder = new DbContextOptionsBuilder<GameDbContext>();
+                string connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING") ??
+                    "Host=localhost;Port=5432;Database=jeopardy;Username=postgres;Password=postgres";
+                optionsBuilder.UseNpgsql(connectionString);
+
+                using var context = new GameDbContext(optionsBuilder.Options);
+                var player = await context.Players.FirstOrDefaultAsync(p => p.Username == username);
+
+                if (player == null)
+                    return (false, null);
+
+                bool isPasswordValid = PasswordHasher.VerifyPassword(password, player.Password_hash);
+                return (isPasswordValid, player);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка при аутентификации: {ex.Message}");
+                return (false, null);
+            }
+        }
+
+        private async Task HandleLoginAsync(Dictionary<string, JsonElement> data)
+        {
+            if (data.TryGetValue("Username", out var nameElement) &&
+                nameElement.GetString() is string username &&
+                data.TryGetValue("Password", out var passwordElement) &&
+                passwordElement.GetString() is string password)
+            {
+                var (isAuthenticated, player) = await AuthenticatePlayerAsync(username, password);
+
+                if (isAuthenticated && player != null)
+                {
+                    PlayerName = username;
+                    Console.WriteLine($"Игрок {PlayerName} успешно авторизовался");
+
+                    await SendMessageAsync(JsonSerializer.Serialize(new
+                    {
+                        Type = "LoginSuccess",
+                        Id = player.Id,
+                        Username = player.Username,
+                        TotalGames = player.TotalGames,
+                        Wins = player.Wins,
+                        TotalScore = player.TotalScore
+                    }));
+
+                    await _server.BroadcastMessageAsync(JsonSerializer.Serialize(new
+                    {
+                        Type = "PlayerJoined",
+                        PlayerName = username
+                    }));
+                }
+                else
+                {
+                    Console.WriteLine($"Неудачная попытка входа для пользователя {username}");
+                    await SendMessageAsync(JsonSerializer.Serialize(new
+                    {
+                        Type = "Error",
+                        Message = "Неверное имя пользователя или пароль"
+                    }));
+                }
+            }
+        }
+
+        private async Task HandleRegisterAsync(Dictionary<string, JsonElement> data)
+        {
+            if (data.TryGetValue("Username", out var nameElement) &&
+                nameElement.GetString() is string username &&
+                data.TryGetValue("Password", out var passwordElement) &&
+                passwordElement.GetString() is string password)
+            {
+                // Валидация данных
+                if (string.IsNullOrWhiteSpace(username) || username.Length < 3)
+                {
+                    await SendMessageAsync(JsonSerializer.Serialize(new
+                    {
+                        Type = "Error",
+                        Message = "Имя пользователя должно содержать минимум 3 символа"
+                    }));
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(password) || password.Length < 6)
+                {
+                    await SendMessageAsync(JsonSerializer.Serialize(new
+                    {
+                        Type = "Error",
+                        Message = "Пароль должен содержать минимум 6 символов"
+                    }));
+                    return;
+                }
+
+                bool registrationSuccess = await RegisterPlayerAsync(username, password);
+
+                if (registrationSuccess)
+                {
+                    // После успешной регистрации сразу авторизуем пользователя
+                    var (isAuthenticated, player) = await AuthenticatePlayerAsync(username, password);
+
+                    if (isAuthenticated && player != null)
+                    {
+                        PlayerName = username;
+                        Console.WriteLine($"Игрок {username} успешно зарегистрирован и авторизован");
+
+                        await SendMessageAsync(JsonSerializer.Serialize(new
+                        {
+                            Type = "RegisterSuccess",
+                            Id = player.Id,
+                            Username = player.Username,
+                            TotalGames = player.TotalGames,
+                            Wins = player.Wins,
+                            TotalScore = player.TotalScore
+                        }));
+
+                        await _server.BroadcastMessageAsync(JsonSerializer.Serialize(new
+                        {
+                            Type = "PlayerJoined",
+                            PlayerName = username
+                        }));
+                    }
+                }
+                else
+                {
+                    await SendMessageAsync(JsonSerializer.Serialize(new
+                    {
+                        Type = "Error",
+                        Message = "Пользователь с таким именем уже существует"
+                    }));
+                }
             }
         }
 
